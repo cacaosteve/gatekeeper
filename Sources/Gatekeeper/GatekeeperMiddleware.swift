@@ -20,14 +20,21 @@ public struct GatekeeperMiddleware: Middleware {
     
     public func respond(to request: Request, chainingTo next: Responder) -> EventLoopFuture<Response> {
         let gatekeeper = request.gatekeeper(config: config, keyMaker: keyMaker)
-            
-        let gatekeep: EventLoopFuture<Void>
-        if let error = error {
-            gatekeep = gatekeeper.gatekeep(on: request, throwing: error)
-        } else {
-            gatekeep = gatekeeper.gatekeep(on: request)
-        }
         
-        return gatekeep.flatMap { next.respond(to: request) }
+        return gatekeeper.gatekeep(on: request, throwing: self.error ?? Abort(.tooManyRequests))
+            .flatMap { next.respond(to: request) }
+            .flatMapError { error in
+                // Check if the error is a too many requests error
+                if let abortError = error as? Abort, abortError.status == .tooManyRequests {
+                    // Create a custom response with plain text
+                    let response = Response(status: .tooManyRequests, body: .init(string: "slow down"))
+                    response.headers.add(name: .contentType, value: "text/plain")
+                    return request.eventLoop.makeSucceededFuture(response)
+                } else {
+                    // Forward other errors to the default error handler
+                    return request.eventLoop.makeFailedFuture(error)
+                }
+            }
     }
+
 }
